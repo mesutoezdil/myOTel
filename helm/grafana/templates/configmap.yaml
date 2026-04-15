@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ad-otel-grafana-config
+  namespace: ad-otel
+
+data:
+  grafana.ini: |
+    [server]
+    http_port = 3000
+
+    [auth.anonymous]
+    enabled = true
+    org_role = Admin
+
+    [plugins]
+    allow_loading_unsigned_plugins = victoriametrics-logs-datasource
+
+    [users]
+    default_theme = light
+
+    [preferences]
+    theme = light
+
+    [dashboards]
+    min_refresh_interval = 10s
+
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics
+        type: prometheus
+        access: proxy
+        url: http://ad-otel-victoriametrics.ad-otel.svc.cluster.local:8428
+        isDefault: true
+        editable: true
+
+      - name: VictoriaLogs
+        type: victoriametrics-logs-datasource
+        uid: VictoriaLogs
+        access: proxy
+        url: http://ad-otel-victorialogs.ad-otel.svc.cluster.local:9428
+        editable: true
+
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 10
+        options:
+          path: /etc/grafana/provisioning/dashboards

@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ad-otel-grafana-dashboard-app
+  namespace: ad-otel
+  labels:
+    grafana_dashboard: "1"
+data:
+  dashboard-app.json: |
+    {{ `
+    {
+      "uid": "app",
+      "title": "app - all namespaces",
+      "editable": true,
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": { "type": "victoriametrics-logs-datasource", "uid": "VictoriaLogs" },
+            "query": "field_values(k8s.namespace.name)",
+            "refresh": 2,
+            "includeAll": true,
+            "allValue": ".*",
+            "multi": false,
+            "current": { "text": "All", "value": "$__all" }
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Scraped Pods with Metrics (prometheus.io/scrape=true)",
+          "type": "timeseries",
+          "description": "Only pods with prometheus.io/scrape=true annotation are scraped. Add the annotation + port to expose metrics.",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
+          "targets": [{
+            "expr": "sum by (namespace, pod) (rate(http_request_duration_seconds_count{job=\"all-namespaces\"}[1m]))",
+            "legendFormat": "{{namespace}} / {{pod}}"
+          }]
+        },
+        {
+          "id": 2,
+          "title": "Latency p95/p99 (requires http_request_duration_seconds)",
+          "type": "timeseries",
+          "description": "Empty if no pods expose http_request_duration_seconds histogram.",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "VictoriaMetrics" },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (namespace, pod, le) (rate(http_request_duration_seconds_bucket{job=\"all-namespaces\"}[1m])))",
+              "legendFormat": "p95 {{namespace}}/{{pod}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (namespace, pod, le) (rate(http_request_duration_seconds_bucket{job=\"all-namespaces\"}[1m])))",
+              "legendFormat": "p99 {{namespace}}/{{pod}}",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "App Logs — $namespace",
+          "type": "logs",
+          "gridPos": { "h": 14, "w": 24, "x": 0, "y": 8 },
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "VictoriaLogs" },
+          "targets": [{
+            "expr": "{layer=\"app\", k8s.namespace.name=~\"$namespace\"}",
+            "refId": "A"
+          }],
+          "options": {
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessages": true,
+            "displayedFields": ["k8s.namespace.name", "k8s.pod.name", "body"]
+          }
+        },
+        {
+          "id": 4,
+          "title": "Log Volume by Namespace",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 22 },
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "VictoriaLogs" },
+          "targets": [{
+            "expr": "count_over_time({layer=\"app\"}[1m]) by (k8s.namespace.name)",
+            "refId": "A",
+            "legendFormat": "{{k8s.namespace.name}}"
+          }]
+        }
+      ],
+      "schemaVersion": 38,
+      "time": { "from": "now-1h", "to": "now" },
+      "refresh": "10s",
+      "version": 2
+    }
+    `}}

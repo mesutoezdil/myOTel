@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ad-otel-otelcol
+  namespace: ad-otel
+  labels:
+    app: ad-otel-otelcol
+spec:
+  selector:
+    matchLabels:
+      app: ad-otel-otelcol
+  template:
+    metadata:
+      labels:
+        app: ad-otel-otelcol
+    spec:
+      serviceAccountName: ad-otel-otelcol
+      containers:
+        - name: otelcol
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/etc/otelcol/config.yaml
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "node.name=$(NODE_NAME),node.ip=$(NODE_IP)"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          securityContext:
+            runAsUser: 0
+            privileged: true
+          ports:
+            - containerPort: 13133
+              name: health
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol
+              readOnly: true
+            - name: hostfs
+              mountPath: /hostfs
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: proc
+              mountPath: /hostfs/proc
+              readOnly: true
+            - name: sys
+              mountPath: /hostfs/sys
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: etcmachineid
+              mountPath: /etc/machine-id
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: ad-otel-otelcol
+        - name: hostfs
+          hostPath:
+            path: /
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: etcmachineid
+          hostPath:
+            path: /etc/machine-id
+            type: File

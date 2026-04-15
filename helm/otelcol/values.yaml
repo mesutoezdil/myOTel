@@ -1,0 +1,12 @@
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.104.0"
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

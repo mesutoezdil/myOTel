@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ad-otel-victorialogs
+  namespace: argocd
+  labels:
+    project: ad-otel
+    component: victorialogs
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://dev0git.wizardtales.com/es-projects/customer/kommone/ionos/vdc_iac/ad-otel.git
+    targetRevision: HEAD
+    path: helm/victorialogs
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ad-otel
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

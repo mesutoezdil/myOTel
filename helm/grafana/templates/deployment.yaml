@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ad-otel-grafana
+  namespace: ad-otel
+  labels:
+      app: ad-otel-grafana
+  annotations:
+      checksum/dashboards-infra: {{ include (print $.Template.BasePath "/dashboard-infra.yaml") . | sha256sum }}
+      checksum/dashboards-kuber: {{ include (print $.Template.BasePath "/dashboard-kuber.yaml") . | sha256sum }}
+      checksum/dashboards-app: {{ include (print $.Template.BasePath "/dashboard-app.yaml") . | sha256sum }}
+      checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+
+
+spec:
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: ad-otel-grafana
+
+  template:
+    metadata:
+      labels:
+        app: ad-otel-grafana
+
+    spec:
+      securityContext:
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+      containers:
+        - name: grafana
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - containerPort: {{ .Values.port }}
+
+          env:
+            - name: GF_PATHS_CONFIG
+              value: /etc/grafana/grafana.ini
+            - name: GF_PATHS_PROVISIONING
+              value: /etc/grafana/provisioning
+            - name: GF_INSTALL_PLUGINS
+              value: "victoriametrics-logs-datasource"
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/grafana
+
+            - name: config
+              mountPath: /etc/grafana/grafana.ini
+              subPath: grafana.ini
+
+            - name: config
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+
+            # ✅ ONLY ONE dashboards directory mount (NO subPath anywhere)
+            - name: dashboards
+              mountPath: /etc/grafana/provisioning/dashboards
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: {{ .Values.port }}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: ad-otel-grafana
+
+        - name: config
+          configMap:
+            name: ad-otel-grafana-config
+
+        # ✅ ALL dashboards + provisioning in one place
+        - name: dashboards
+          projected:
+            sources:
+              - configMap:
+                  name: ad-otel-grafana-config
+                  items:
+                    - key: dashboards.yaml
+                      path: dashboards.yaml
+
+              - configMap:
+                  name: ad-otel-grafana-dashboard-infra
+                  items:
+                    - key: dashboard.json
+                      path: dashboard-infra.json
+
+              - configMap:
+                  name: ad-otel-grafana-dashboard-kuber
+                  items:
+                    - key: dashboard-kuber.json
+                      path: dashboard-kuber.json
+
+              - configMap:
+                  name: ad-otel-grafana-dashboard-app
+                  items:
+                    - key: dashboard-app.json
+                      path: dashboard-app.json

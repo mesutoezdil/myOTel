@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ad-otel-victorialogs
+  namespace: ad-otel
+  labels:
+    app: ad-otel-victorialogs
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ad-otel-victorialogs
+  template:
+    metadata:
+      labels:
+        app: ad-otel-victorialogs
+    spec:
+      containers:
+        - name: victorialogs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --storageDataPath=/storage
+            - --retentionPeriod={{ .Values.retentionPeriod }}
+            - --httpListenAddr=:{{ .Values.port }}
+            - --memory.allowedPercent=60
+          ports:
+            - containerPort: {{ .Values.port }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: ad-otel-victorialogs

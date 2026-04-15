@@ -1,0 +1,216 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ad-otel-otelcol
+  namespace: ad-otel
+data:
+  config.yaml: |
+
+    # ─────────────────────────────────────────────
+    # RECEIVERS
+    # ─────────────────────────────────────────────
+
+    receivers:
+
+      hostmetrics:
+        collection_interval: 30s
+        root_path: /hostfs
+        scrapers:
+          cpu: {}
+          memory: {}
+          disk: {}
+          filesystem:
+            exclude_mount_points:
+              mount_points:
+                - /dev
+                - /sys
+                - /proc
+                - /run/k3s
+                - /var/lib/kubelet
+              match_type: strict
+          network: {}
+          processes: {}
+
+      kubeletstats:
+        collection_interval: 30s
+        auth_type: serviceAccount
+        endpoint: "https://${env:NODE_IP}:10250"
+        insecure_skip_verify: true
+        metric_groups:
+          - node
+          - pod
+          - container
+
+      filelog/system:
+        include:
+          - /var/log/syslog
+        start_at: end
+
+      k8s_events:
+        auth_type: serviceAccount
+        namespaces: []
+
+      prometheus/app:
+        config:
+          scrape_configs:
+            - job_name: all-namespaces
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                  action: keep
+                  regex: "true"
+
+                - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                  action: replace
+                  target_label: __address__
+                  separator: ":"
+                  regex: (.+);(.+)
+                  replacement: $$1:$$2
+
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: namespace
+
+      filelog/app:
+        include:
+          - /var/log/pods/*_*/**/*.log
+        exclude:
+          - /var/log/pods/kube-system_*/**/*.log
+        start_at: end
+        include_file_path: true
+        include_file_name: false
+        operators:
+          - type: regex_parser
+            id: parse_cri
+            on_error: send
+            regex: '^(?P<time>\S+) (?P<stream>stdout|stderr) (?P<flags>\S+) (?P<log>.*)$'
+            timestamp:
+              parse_from: attributes.time
+              layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+          - type: move
+            from: attributes.log
+            to: body
+          - type: regex_parser
+            id: parse_path
+            on_error: send
+            parse_from: attributes["log.file.path"]
+            regex: '/var/log/pods/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_[^/]+/(?P<container_name>[^/]+)/.*'
+          - type: move
+            from: attributes.pod_name
+            to: resource["k8s.pod.name"]
+
+    # ─────────────────────────────────────────────
+    # PROCESSORS
+    # ─────────────────────────────────────────────
+
+    processors:
+
+      resourcedetection:
+        detectors: [env, system]
+        system:
+          hostname_sources: [os]
+
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.namespace.name
+            - k8s.deployment.name
+            - k8s.node.name
+            - k8s.container.name
+
+      attributes:
+        actions:
+          - key: node
+            from_attribute: k8s.node.name
+            action: insert
+          - key: ip
+            from_attribute: node.ip
+            action: insert
+
+      resource/infra:
+        attributes:
+          - key: layer
+            value: infra
+            action: insert
+
+      resource/kuber:
+        attributes:
+          - key: layer
+            value: kuber
+            action: insert
+
+      resource/app:
+        attributes:
+          - key: layer
+            value: app
+            action: insert
+
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+        spike_limit_mib: 100
+
+      batch:
+        timeout: 10s
+
+    # ─────────────────────────────────────────────
+    # EXPORTERS
+    # ─────────────────────────────────────────────
+
+    exporters:
+
+      prometheusremotewrite:
+        endpoint: http://ad-otel-victoriametrics.ad-otel.svc.cluster.local:8428/api/v1/write
+        resource_to_telemetry_conversion:
+          enabled: true
+        tls:
+          insecure: true
+
+      otlphttp/victorialogs:
+        endpoint: http://ad-otel-victorialogs.ad-otel.svc.cluster.local:9428/insert/opentelemetry
+        tls:
+          insecure: true
+
+    # ─────────────────────────────────────────────
+    # SERVICE
+    # ─────────────────────────────────────────────
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    service:
+      extensions: [health_check]
+      pipelines:
+
+        metrics:
+          receivers: [hostmetrics, kubeletstats]
+          processors: [memory_limiter, resourcedetection, k8sattributes, attributes, batch]
+          exporters: [prometheusremotewrite]
+
+        metrics/app:
+          receivers: [prometheus/app]
+          processors: [memory_limiter, resource/app, resourcedetection, k8sattributes, batch]
+          exporters: [prometheusremotewrite]
+
+        logs/system:
+          receivers: [filelog/system]
+          processors: [memory_limiter, resource/infra, resourcedetection, k8sattributes, batch]
+          exporters: [otlphttp/victorialogs]
+
+        logs/k8s_events:
+          receivers: [k8s_events]
+          processors: [memory_limiter, resource/kuber, resourcedetection, batch]
+          exporters: [otlphttp/victorialogs]
+
+        logs/app:
+          receivers: [filelog/app]
+          processors: [memory_limiter, resource/app, resourcedetection, k8sattributes, batch]
+          exporters: [otlphttp/victorialogs]

@@ -1,0 +1,30 @@
+image:
+  repository: grafana/grafana
+  tag: "11.2.0"
+  pullPolicy: IfNotPresent
+
+port: 3000
+
+ingress:
+  host: grafana.ad-otel.local
+  annotations: {}
+
+storage:
+  size: 2Gi
+  storageClass: longhorn
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+# Planned improvements (not yet enabled):
+# - auth.anonymous.enabled: false  (enable for non-sandbox environments)
+# - NetworkPolicy to restrict ingress to ad-otel namespace only
+
+service:
+  type: ClusterIP
+  port: 80
