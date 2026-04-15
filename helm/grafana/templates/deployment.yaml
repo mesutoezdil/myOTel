@@ -60,7 +60,7 @@ spec:
               mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
               subPath: datasources.yaml
 
-            # ✅ ONLY ONE dashboards directory mount (NO subPath anywhere)
+            # ONLY ONE dashboards directory mount (NO subPath anywhere)
             - name: dashboards
               mountPath: /etc/grafana/provisioning/dashboards
 
@@ -87,7 +87,7 @@ spec:
           configMap:
             name: ad-otel-grafana-config
 
-        # ✅ ALL dashboards + provisioning in one place
+        # ALL dashboards + provisioning in one place
         - name: dashboards
           projected:
             sources:

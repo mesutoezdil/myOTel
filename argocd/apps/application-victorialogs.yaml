@@ -11,7 +11,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://dev0git.wizardtales.com/es-projects/customer/kommone/ionos/vdc_iac/ad-otel.git
+    repoURL: https://otel.git
     targetRevision: HEAD
     path: helm/victorialogs
   destination:
