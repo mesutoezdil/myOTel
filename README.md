@@ -38,11 +38,20 @@ Zero-config annotation-driven discovery across all namespaces.
 Any pod with `prometheus.io/scrape: "true"` is scraped automatically. 
 Receivers: `prometheus/app` (request rate, latency, custom metrics), `filelog/app` (CRI-parsed container logs from all pods with namespace/pod/container attribution).
 
+#### Linkerd mesh `layer=mesh`
+
+Service mesh golden metrics with zero application instrumentation. When a workload is meshed, the Linkerd proxy exposes per-workload metrics on `:4191/metrics`. A dedicated scrape job collects them, keeps only the golden set, and tags everything `layer=mesh` so mesh-measured signals stay distinct from app-measured ones.
+Receiver: `prometheus/mesh` (Kubernetes pod SD, keeps containers named `linkerd-proxy`, scrapes `:4191`).
+Processor: `filter/mesh` keeps `response_total`, `response_latency_ms`, `tcp_open_connections`, `tcp_read_bytes_total`, and `tcp_write_bytes_total`; everything else is dropped to control cardinality.
+
+Verified on a single-node K3s v1.34.6 lab with Linkerd enterprise-2.18.10 and emojivoto, not on sandbox-east. See the companion write-up for the full walkthrough.
+
 ## Pipelines
 
 ```
 hostmetrics + kubeletstats  →  resourcedetection · k8sattributes · attributes · batch  →  VictoriaMetrics
 prometheus/app              →  resource/app · resourcedetection · k8sattributes · batch  →  VictoriaMetrics
+prometheus/mesh             →  filter/mesh · resource/mesh · resourcedetection · k8sattributes · batch  →  VictoriaMetrics
 
 filelog/system   →  resource/infra · resourcedetection · k8sattributes · batch  →  VictoriaLogs
 k8s_events                  →  resource/kuber · resourcedetection · batch                  →  VictoriaLogs
@@ -179,7 +188,9 @@ OtelCol limit is 512Mi. Both use `start_at: end` for log receivers to avoid read
 If OOM kills reappear (`Exit Code 137` in pod describe), increase the limits in `values.yaml`.
 
 `layer` label as routing key - one `resource/*` processor per pipeline inserts `layer=infra|kuber|app`. 
-This single attribute cleanly separates all three signal tiers in every Grafana dashboard.
+This single attribute cleanly separates all three signal tiers in every Grafana dashboard. The mesh tier adds a fourth: `layer=mesh`.
+
+Mesh metrics require collector 0.118.0+ - the `prometheus/mesh` relabel rule uses `replacement: $1:4191` to point the scrape at the pod IP on the proxy admin port. Collector 0.104.0 rejects `$1` in replacement fields (the `confmap.unifyEnvVarExpansion` gate treats it as an env var). Image is pinned to `0.118.0` in `helm/otelcol/values.yaml` where the gate is gone. Filtering is done in the `filter/mesh` processor, not `metric_relabel_configs` in the receiver, because the Prometheus receiver silently ignores keep filters.
 
 DaemonSet runs as root - required to read `/proc`, `/sys`, `/var/log/pods` from the host.
 
