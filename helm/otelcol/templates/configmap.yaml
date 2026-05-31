@@ -75,6 +75,28 @@ data:
                 - source_labels: [__meta_kubernetes_namespace]
                   target_label: namespace
 
+      prometheus/mesh:
+        config:
+          scrape_configs:
+            - job_name: linkerd-mesh
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_container_name]
+                  action: keep
+                  regex: linkerd-proxy
+                - source_labels: [__meta_kubernetes_pod_ip]
+                  action: replace
+                  target_label: __address__
+                  regex: (.+)
+                  replacement: $1:4191
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: namespace
+                - source_labels: [__meta_kubernetes_pod_label_app]
+                  target_label: app
       filelog/app:
         include:
           - /var/log/pods/*_*/**/*.log
@@ -152,6 +174,16 @@ data:
             value: app
             action: insert
 
+      resource/mesh:
+        attributes:
+          - key: layer
+            value: mesh
+            action: insert
+      filter/mesh:
+        error_mode: ignore
+        metrics:
+          metric:
+            - 'not(name == "response_total" or IsMatch(name, "response_latency_ms.*") or name == "tcp_open_connections" or name == "tcp_read_bytes_total" or name == "tcp_write_bytes_total")'
       memory_limiter:
         check_interval: 1s
         limit_mib: 400
@@ -200,6 +232,10 @@ data:
           processors: [memory_limiter, resource/app, resourcedetection, k8sattributes, batch]
           exporters: [prometheusremotewrite]
 
+        metrics/mesh:
+          receivers: [prometheus/mesh]
+          processors: [memory_limiter, filter/mesh, resource/mesh, resourcedetection, k8sattributes, batch]
+          exporters: [prometheusremotewrite]
         logs/system:
           receivers: [filelog/system]
           processors: [memory_limiter, resource/infra, resourcedetection, k8sattributes, batch]
