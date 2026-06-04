@@ -1,30 +1,23 @@
 # otel-mesh-collector-config.yaml
+# Tested with otel/opentelemetry-collector-contrib:0.118.0
+# Why pin 0.118.0: the Collector's $-based env var expansion has rejected $1-style
+# replacement values in relabel_configs on several versions. Observed failing on
+# contrib 0.104.0 in an earlier lab run; reported upstream on 0.112.0:
+# https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/36160
+# Works on 0.118.0, the version this config was tested with. Pin your image tag.
+# Requires the contrib distribution: filter processor (OTTL), k8sattributes, prometheusremotewrite.
 #
-# Standalone OpenTelemetry Collector config for the layer=mesh metrics pipeline.
-# Extracted from helm/otelcol/templates/configmap.yaml (job_name: linkerd-mesh)
-# and reduced to the mesh path only. Companion artifact for the Buoyant article
-# "OTel and Mesh-Derived Metrics: A 2026 Reference."
+# Linkerd edge-26.5.5 (2.19+), K3s v1.34.6, June 2026
+# Source: https://github.com/mesutoezdil/myOTel
 #
-# Three notes from the article lab:
-#
-#  1. The relabel_configs keep below (target selection by container name
-#     linkerd-proxy) is verified working on OTel Collector contrib 0.118.0.
-#
-#  2. metric_relabel_configs keep, by contrast, is silently ignored for metric
-#     filtering on this path: a Prometheus metric_relabel_configs keep rule on
-#     prometheus/mesh produces no error and no effect. Use the OTTL filter/mesh
-#     processor below to trim to the golden set.
-#
-#  3. replacement: $1:4191 requires OTel Collector contrib >= 0.118.0. Older
-#     builds enable the confmap.unifyEnvVarExpansion feature gate, which treats
-#     $1 as an environment-variable reference and rejects the relabel replacement
-#     at startup (sourced to contrib#36160). Pin contrib 0.118.0+ so the $1
-#     capture group survives expansion.
-#
-# Update the prometheusremotewrite endpoint to match your backend namespace.
+# This config adds a mesh-metrics pipeline to an existing OTel Collector.
+# Deploy as a DaemonSet alongside your meshed workloads.
+# Update the prometheusremotewrite endpoint to match your backend.
 
 receivers:
-
+  # Scrape the linkerd-proxy sidecar /metrics endpoint (port 4191) across all meshed pods.
+  # Note: wget is not available inside the linkerd-proxy container itself.
+  # This receiver scrapes from outside via Kubernetes service discovery.
   prometheus/mesh:
     config:
       scrape_configs:
@@ -49,24 +42,41 @@ receivers:
               target_label: app
 
 processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
 
+  # Keep only the 5 metric families this pipeline ships: response_total and
+  # response_latency_ms (the sources of the golden metrics) plus the 3 TCP counters.
+  # Note that request_total is intentionally NOT kept; request rate is measured from
+  # response_total. Everything else is dropped.
+  # A metric_relabel_configs keep rule in the receiver also works (verified on contrib
+  # 0.118.0), but it cannot drop the scrape's synthetic series (up, scrape_*), and its
+  # regex is fully anchored. This OTTL filter drops the synthetics too.
+  # Note: IsMatch(name, "response_latency_ms.*") is unanchored and also matches
+  # control_response_latency_ms_* (3 extra names). target_info is exporter-generated
+  # and survives either way. Acceptable for this use case.
   filter/mesh:
     error_mode: ignore
     metrics:
       metric:
         - 'not(name == "response_total" or IsMatch(name, "response_latency_ms.*") or name == "tcp_open_connections" or name == "tcp_read_bytes_total" or name == "tcp_write_bytes_total")'
 
+  # Tag every mesh series with layer=mesh so it is distinguishable from app-layer data.
   resource/mesh:
     attributes:
       - key: layer
         value: mesh
         action: insert
 
+  # Detect host-level metadata (hostname, OS) and add to all series.
   resourcedetection:
     detectors: [env, system]
     system:
       hostname_sources: [os]
 
+  # Enrich series with Kubernetes metadata (pod name, namespace, deployment, node).
   k8sattributes:
     auth_type: serviceAccount
     passthrough: false
@@ -78,18 +88,12 @@ processors:
         - k8s.node.name
         - k8s.container.name
 
-  memory_limiter:
-    check_interval: 1s
-    limit_mib: 400
-    spike_limit_mib: 100
-
   batch:
     timeout: 10s
 
 exporters:
-
+  # Any Prometheus-compatible backend works; this is VictoriaMetrics in the reference stack.
   # Update this endpoint to match your VictoriaMetrics or Prometheus instance.
-  # Example: http://victoriametrics.<YOUR_NAMESPACE>.svc.cluster.local:8428/api/v1/write
   prometheusremotewrite:
     endpoint: http://victoriametrics.<YOUR_NAMESPACE>.svc.cluster.local:8428/api/v1/write
     resource_to_telemetry_conversion:
