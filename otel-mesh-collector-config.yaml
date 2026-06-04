@@ -5,18 +5,21 @@
 # and reduced to the mesh path only. Companion artifact for the Buoyant article
 # "OTel and Mesh-Derived Metrics: A 2026 Reference."
 #
-# Two findings from the article lab:
+# Three notes from the article lab:
 #
-#  1. metric_relabel_configs keep is silently ignored on this path.
-#     A Prometheus metric_relabel_configs keep rule on prometheus/mesh produces
-#     no error and no effect. The OTTL filter/mesh processor below is the
-#     correct, working solution.
+#  1. The relabel_configs keep below (target selection by container name
+#     linkerd-proxy) is verified working on OTel Collector contrib 0.118.0.
 #
-#  2. replacement: $1:4191 requires OTel Collector contrib >= 0.118.0.
-#     Older builds enable the confmap.unifyEnvVarExpansion feature gate, which
-#     treats $1 as an environment-variable reference and rejects the relabel
-#     replacement at startup. Pin contrib 0.118.0+ so the $1 capture group
-#     survives expansion.
+#  2. metric_relabel_configs keep, by contrast, is silently ignored for metric
+#     filtering on this path: a Prometheus metric_relabel_configs keep rule on
+#     prometheus/mesh produces no error and no effect. Use the OTTL filter/mesh
+#     processor below to trim to the golden set.
+#
+#  3. replacement: $1:4191 requires OTel Collector contrib >= 0.118.0. Older
+#     builds enable the confmap.unifyEnvVarExpansion feature gate, which treats
+#     $1 as an environment-variable reference and rejects the relabel replacement
+#     at startup (sourced to contrib#36160). Pin contrib 0.118.0+ so the $1
+#     capture group survives expansion.
 #
 # Update the prometheusremotewrite endpoint to match your backend namespace.
 
