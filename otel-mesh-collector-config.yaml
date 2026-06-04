@@ -1,0 +1,111 @@
+# otel-mesh-collector-config.yaml
+#
+# Standalone OpenTelemetry Collector config for the `layer=mesh` metrics pipeline.
+# Extracted verbatim from the live deployment in
+# helm/otelcol/templates/configmap.yaml (job_name: linkerd-mesh) and reduced to
+# the mesh path only. Companion artifact for the Buoyant article on
+# OTel + mesh-derived metrics.
+#
+# ── Two findings from the article lab (not visible in the helm configmap) ──
+#
+#  1. metric_relabel_configs keep is SILENTLY IGNORED on this path.
+#     Trying to trim the series down to the golden set with a Prometheus
+#     `metric_relabel_configs: [{action: keep, ...}]` rule on prometheus/mesh
+#     produces no error and no effect — everything passes through. The OTTL
+#     `filter/mesh` processor below is the correct, working solution.
+#
+#  2. `replacement: $1:4191` requires OTel Collector contrib >= 0.118.0.
+#     Older builds enable the `confmap.unifyEnvVarExpansion` feature gate, which
+#     treats `$1` as an environment-variable reference and rejects the relabel
+#     replacement at startup. Pin contrib 0.118.0+ (or disable that gate) so the
+#     `$1` capture group survives expansion.
+
+receivers:
+
+  prometheus/mesh:
+    config:
+      scrape_configs:
+        - job_name: linkerd-mesh
+          scrape_interval: 30s
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_container_name]
+              action: keep
+              regex: linkerd-proxy
+            - source_labels: [__meta_kubernetes_pod_ip]
+              action: replace
+              target_label: __address__
+              regex: (.+)
+              replacement: $1:4191        # requires contrib >= 0.118.0 (see header note 2)
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_label_app]
+              target_label: app
+
+processors:
+
+  # Keep ONLY the 5 golden mesh metric families; drop everything else to bound
+  # cardinality. OTTL — not metric_relabel_configs — is what actually filters
+  # here (see header note 1).
+  filter/mesh:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'not(name == "response_total" or IsMatch(name, "response_latency_ms.*") or name == "tcp_open_connections" or name == "tcp_read_bytes_total" or name == "tcp_write_bytes_total")'
+
+  resource/mesh:
+    attributes:
+      - key: layer
+        value: mesh
+        action: insert
+
+  resourcedetection:
+    detectors: [env, system]
+    system:
+      hostname_sources: [os]
+
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata:
+        - k8s.pod.name
+        - k8s.namespace.name
+        - k8s.deployment.name
+        - k8s.node.name
+        - k8s.container.name
+
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+
+  batch:
+    timeout: 10s
+
+exporters:
+
+  # Prometheus-compatible backend. In the reference lab this is VictoriaMetrics;
+  # any prometheusremotewrite-compatible endpoint works.
+  prometheusremotewrite:
+    endpoint: http://ad-otel-victoriametrics.ad-otel.svc.cluster.local:8428/api/v1/write
+    resource_to_telemetry_conversion:
+      enabled: true
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+
+    metrics/mesh:
+      receivers: [prometheus/mesh]
+      processors: [memory_limiter, filter/mesh, resource/mesh, resourcedetection, k8sattributes, batch]
+      exporters: [prometheusremotewrite]

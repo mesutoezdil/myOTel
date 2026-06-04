@@ -197,3 +197,45 @@ DaemonSet runs as root - required to read `/proc`, `/sys`, `/var/log/pods` from 
 Cluster-wide monitoring - `prometheus/app` uses cluster-wide Kubernetes SD (no namespace filter). 
 `filelog/app` pattern is `/var/log/pods/*/*/*.log`. 
 Both were scoped to a single namespace in the reference repo and were widened here to cover all workloads on sandbox-east.
+
+## Mesh metrics pipeline (article reference)
+
+`otel-mesh-collector-config.yaml` in this repo is the standalone Collector config for the
+`layer=mesh` pipeline, extracted from `helm/otelcol/templates/configmap.yaml` and reduced to
+the mesh path only. It is the companion artifact for the Buoyant article
+"OTel and Mesh-Derived Metrics: A 2026 Reference."
+
+It scrapes `linkerd-proxy` sidecars at `:4191`, keeps the 5 golden metric families via the
+OTTL `filter/mesh` processor, tags every series `layer=mesh`, and writes to a
+Prometheus-compatible backend (VictoriaMetrics in this repo).
+
+Two findings from the article lab are captured as comments in the artifact:
+- The golden-set filter must use OTTL `filter/mesh`; a Prometheus `metric_relabel_configs`
+  keep rule is silently ignored on this path.
+- `replacement: $1:4191` requires OTel Collector contrib >= 0.118.0; older builds enable the
+  `confmap.unifyEnvVarExpansion` gate, which rejects the `$1` relabel replacement at startup.
+
+Article lab, tested on:
+- Linkerd edge-26.5.5 (2.19+)
+- K3s v1.34.6, single node
+- OTel Collector contrib 0.118.0
+- OpenTelemetry Demo (Astronomy Shop) as the meshed workload
+- VictoriaMetrics as the metrics backend
+
+This is a separate validation from the `Linkerd mesh` / `layer=mesh` section above, which was
+verified on Linkerd enterprise-2.18.10 + emojivoto. Same pipeline, two different mesh
+distributions and workloads.
+
+The full walkthrough, lab notes, and Grafana dashboard JSON are in the Buoyant article.
+[Link to be added after publication.]
+
+### Pipeline: layer=mesh
+
+| Processor | Role |
+| --- | --- |
+| `memory_limiter` | Caps Collector memory (400 MiB soft / 100 MiB spike) |
+| `filter/mesh` | Keeps 5 golden families via OTTL: `response_total`, `response_latency_ms.*`, `tcp_open_connections`, `tcp_read_bytes_total`, `tcp_write_bytes_total`. A `metric_relabel_configs` keep is silently ignored here. |
+| `resource/mesh` | Inserts `layer=mesh` on every series |
+| `resourcedetection` | Adds host metadata (hostname, OS) |
+| `k8sattributes` | Enriches with pod, namespace, deployment, node labels |
+| `batch` | Batches before export (10s) |
