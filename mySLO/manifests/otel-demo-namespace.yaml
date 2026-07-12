@@ -1,0 +1,10 @@
+# The meshed workload lives here. The linkerd.io/inject annotation on the namespace
+# makes the proxy injector add a linkerd-proxy sidecar to every pod created in it, so
+# all east-west traffic between the OpenTelemetry Demo services flows through the mesh
+# and produces response_total / response_latency_ms_bucket / route_response_total.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-demo
+  annotations:
+    linkerd.io/inject: enabled

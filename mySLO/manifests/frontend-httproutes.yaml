@@ -1,0 +1,60 @@
+# Per-route SLOs need named routes. Meshing alone only gives Linkerd the "default" route, so
+# outbound_http_route_request_statuses_total shows route_name=http/endpoint/default. We attach
+# Gateway API HTTPRoutes to the frontend Service (parentRef kind: Service is how Linkerd's
+# outbound policy is configured). The load generator already drives these paths continuously,
+# so each route gets real traffic.
+#
+# We use one HTTPRoute per logical route rather than one route with multiple rules, because the
+# standard Gateway API channel (v1.2.1) does not carry per-rule names, and Linkerd sets the
+# `route_name` metric label from the HTTPRoute's name. Separate objects give us distinct,
+# readable route_name values (frontend-products, frontend-cart, frontend-checkout).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-products
+  namespace: otel-demo
+spec:
+  parentRefs:
+    - name: frontend
+      kind: Service
+      group: ""
+      port: 8080
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/products
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-cart
+  namespace: otel-demo
+spec:
+  parentRefs:
+    - name: frontend
+      kind: Service
+      group: ""
+      port: 8080
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/cart
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend-checkout
+  namespace: otel-demo
+spec:
+  parentRefs:
+    - name: frontend
+      kind: Service
+      group: ""
+      port: 8080
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/checkout

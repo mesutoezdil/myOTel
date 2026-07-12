@@ -1,0 +1,92 @@
+# SLO recording rules + alerts, as a Prometheus Operator PrometheusRule.
+#
+# SLO target used here: 99.9% availability (error budget = 0.1%). All expressions are built on
+# the Linkerd proxy metric response_total, grouped by the robust `workload` label from our
+# PodMonitor, so every meshed service is covered with no code changes.
+#
+# Every selector excludes target_port="4191". That is the Linkerd proxy admin port, where the
+# kubelet's liveness/readiness probes land (route_name="probe"). Those probes are steady, always
+# 200, and never stop, so if you leave them in: (1) they slightly inflate availability by diluting
+# real errors, and (2) they put a permanent ~0.3 rps floor under every service, so a real silent
+# outage (app traffic to zero) never trips a traffic-floor alert. Excluding port 4191 leaves only
+# real application traffic.
+#
+# The alerting section makes the outline's central point concrete: the naive alert
+# (SLOAvailabilityBreach5m) fires the moment success rate dips below target, so it screams on
+# every transient blip and deploy. The burn-rate alert (SLOErrorBudgetFastBurn) only fires when
+# you are consuming the 30-day budget fast enough to matter. Ship the second one, not the first.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: linkerd-slo
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: slo.sli.recording
+      interval: 30s
+      rules:
+        # Availability SLI: inbound success ratio per service, over two windows.
+        - record: sli:availability:ratio_rate5m
+          expr: |
+            sum by (workload, workload_ns) (rate(response_total{direction="inbound", classification="success", target_port!="4191"}[5m]))
+            /
+            sum by (workload, workload_ns) (rate(response_total{direction="inbound", target_port!="4191"}[5m]))
+        - record: sli:availability:ratio_rate1h
+          expr: |
+            sum by (workload, workload_ns) (rate(response_total{direction="inbound", classification="success", target_port!="4191"}[1h]))
+            /
+            sum by (workload, workload_ns) (rate(response_total{direction="inbound", target_port!="4191"}[1h]))
+        # Request-rate SLI: inbound requests per second per service (SLO #4, the traffic floor).
+        - record: sli:request:rate5m
+          expr: |
+            sum by (workload, workload_ns) (rate(response_total{direction="inbound", target_port!="4191"}[5m]))
+    - name: slo.alerts
+      rules:
+        # NAIVE alert — do NOT ship this. Fires whenever 5m success rate dips below the target,
+        # which happens on nearly every deploy and every transient blip. Kept here only to
+        # contrast with the burn-rate alert below.
+        - alert: SLOAvailabilityBreach5m
+          expr: sli:availability:ratio_rate5m < 0.999
+          for: 1m
+          labels:
+            severity: ticket
+            slo: availability
+          annotations:
+            summary: "{{ $labels.workload }} 5m success rate below 99.9%"
+            description: "{{ $labels.workload }} in {{ $labels.workload_ns }} 5m success rate is {{ $value | humanizePercentage }}. This alert is intentionally noisy; prefer the burn-rate alert."
+        # SHIP THIS — fast-burn alert. A 1h burn rate above 14.4 means you are spending 2% of the
+        # 30-day error budget every hour: the budget is gone in ~2 days if it keeps up.
+        - alert: SLOErrorBudgetFastBurn
+          expr: (1 - sli:availability:ratio_rate1h) / (1 - 0.999) > 14.4
+          for: 2m
+          labels:
+            severity: page
+            slo: availability
+          annotations:
+            summary: "{{ $labels.workload }} is burning its error budget fast"
+            description: "{{ $labels.workload }} in {{ $labels.workload_ns }}: 1h burn rate is {{ $value | humanize }}x (threshold 14.4x). At this rate the 30-day budget is exhausted in under ~2 days."
+        # SLO 4 — traffic floor (the "dead man's switch"). Fires when a service that WAS serving
+        # real traffic falls to near zero, which a success-rate SLO can't see (no requests, no
+        # failures, a perfect-looking 100%). The `offset 15m >= 0.2` guard means it only applies
+        # to services that actually had traffic, so it never nags a naturally-quiet service.
+        # `for: 2m` here for a quick lab demo; 5 to 10m is more typical in production.
+        # Note: we use `unless`, not `sli:request:rate5m < 0.05`. When app traffic truly stops, the
+        # series doesn't go to 0, it DISAPPEARS (no samples match the rate window), so a `< 0.05`
+        # comparison has nothing to evaluate and never fires. `A unless B` keeps the services that
+        # had real traffic 15m ago (A) but are NOT currently serving >= 0.05 rps (B), which is
+        # exactly "was busy, now silent," including the vanished-series case. $value is the
+        # historical rate, so the description reads "was serving X 15m ago."
+        - alert: SLOTrafficFloor
+          expr: |
+            (sli:request:rate5m offset 15m >= 1)
+            unless
+            (sli:request:rate5m >= 0.05)
+          for: 2m
+          labels:
+            severity: page
+            slo: request_rate
+          annotations:
+            summary: "{{ $labels.workload }} traffic has dropped to the floor"
+            description: "{{ $labels.workload }} in {{ $labels.workload_ns }} was serving {{ $value | humanize }} req/s 15m ago and is now at or near zero. Possible silent failure upstream."

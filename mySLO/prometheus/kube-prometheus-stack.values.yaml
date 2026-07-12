@@ -1,0 +1,27 @@
+# kube-prometheus-stack Helm values — SLO lab (bring-your-own Prometheus)
+# Chart: prometheus-community/kube-prometheus-stack 87.15.1 (Prometheus operator v0.92.1)
+#
+# The one setting that matters for this lab: by default kube-prometheus-stack only
+# discovers PodMonitors/ServiceMonitors that carry its own Helm release label. Our
+# Linkerd proxy PodMonitor does not, so we tell Prometheus to select ALL monitors in
+# every namespace. This is the classic "why isn't my PodMonitor being scraped" gotcha.
+prometheus:
+  prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    # Watch every namespace for monitors and rules.
+    podMonitorNamespaceSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    ruleNamespaceSelector: {}
+    retention: 7d
+
+grafana:
+  # Lab-only credentials. Never do this in production.
+  adminPassword: admin
+  defaultDashboardsEnabled: true
+
+# We don't need Alertmanager's default noisy rules firing during the lab.
+alertmanager:
+  enabled: true

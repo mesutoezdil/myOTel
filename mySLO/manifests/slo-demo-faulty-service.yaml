@@ -1,0 +1,83 @@
+# A controlled fault-injection workload, used only to demonstrate an availability SLO breach
+# and the burn-rate alert firing. The OpenTelemetry Demo runs at ~100% success, which is what
+# you want in a demo but makes for a boring availability SLO. We tried the demo's flagd feature
+# flags (adFailure, productCatalogFailure) to inject errors, but in this demo version they did
+# not produce Linkerd-visible failures reliably. So we add one small, honest, deterministic
+# failure source instead.
+#
+# `orders-api` is httpbin. The load generator hits /status/200,200,200,500, so httpbin returns
+# a random pick from that list: roughly 25% HTTP 500. HTTP 500 is unambiguously classified as a
+# failure by Linkerd, so success rate lands near 75%. The workload is meshed (namespace
+# injection), so its response_total and response_latency_ms_bucket flow through the same
+# PodMonitor as everything else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slo-lab
+  annotations:
+    linkerd.io/inject: enabled
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: slo-lab
+  labels: { app: orders-api }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders-api } }
+  template:
+    metadata:
+      labels: { app: orders-api }
+    spec:
+      containers:
+        - name: httpbin
+          image: kennethreitz/httpbin:latest
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-api
+  namespace: slo-lab
+  labels: { app: orders-api }
+spec:
+  selector: { app: orders-api }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      appProtocol: http    # tell Linkerd this is HTTP so it classifies statuses
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-load
+  namespace: slo-lab
+  labels: { app: orders-load }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders-load } }
+  template:
+    metadata:
+      labels: { app: orders-load }
+    spec:
+      containers:
+        - name: load
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "driving orders-api with ~25% 500s";
+              while true; do
+                wget -q -O /dev/null "http://orders-api.slo-lab.svc.cluster.local/status/200,200,200,500" 2>/dev/null || true;
+                sleep 0.05;
+              done
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 64Mi }

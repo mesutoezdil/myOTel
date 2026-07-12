@@ -1,0 +1,71 @@
+# Tell our own Prometheus (kube-prometheus-stack) to scrape the Linkerd proxies.
+#
+# This is the "bring your own Prometheus" pattern from the Linkerd docs, expressed as a
+# Prometheus Operator PodMonitor instead of a raw scrape_config, because kube-prometheus-stack
+# is operator-based and PodMonitor is the idiomatic object here.
+#
+# Gotchas baked into this file:
+#   1. In Linkerd edge the proxy is a NATIVE SIDECAR: it lives in .spec.initContainers with
+#      restartPolicy: Always, not in .spec.containers. Its admin port is named `linkerd-admin`
+#      (4191). Prometheus pod service discovery still exposes that port, so `port: linkerd-admin`
+#      works, but this is the thing that surprises people.
+#   2. kube-prometheus-stack only selects monitors carrying its release label by default. We set
+#      podMonitorSelectorNilUsesHelmValues=false in the Helm values, but we also add
+#      `release: kps` here as belt-and-suspenders so it is picked up no matter what.
+#   3. Meshed pods carry the label `linkerd.io/control-plane-ns: linkerd`. We select on it so we
+#      scrape only meshed pods, in every namespace.
+#   4. The proxy does not put the source workload name in the metric. We recover it by copying the
+#      injected pod labels (`linkerd.io/proxy-deployment`, `linkerd.io/workload-ns`) into clean
+#      target labels `deployment` and `workload_ns`, so SLOs can group by service.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: linkerd-proxy
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchLabels:
+      linkerd.io/control-plane-ns: linkerd
+  podMetricsEndpoints:
+    - port: linkerd-admin
+      path: /metrics
+      interval: 10s
+      relabelings:
+        # Build one robust `workload` label that works for every owner kind. A Deployment pod
+        # carries linkerd.io/proxy-deployment, but a DaemonSet pod (e.g. otel-collector-agent)
+        # carries linkerd.io/proxy-daemonset, a StatefulSet pod proxy-statefulset, etc. If we
+        # only mapped `deployment`, those workloads would fall into an empty label and get
+        # silently bucketed together. Each rule fires only when its source is non-empty (the
+        # (.+) regex can't match ""), and `deployment` is applied last so it wins for the
+        # common case.
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_replicaset]
+          targetLabel: workload
+          regex: (.+)
+          replacement: $1
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_statefulset]
+          targetLabel: workload
+          regex: (.+)
+          replacement: $1
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_daemonset]
+          targetLabel: workload
+          regex: (.+)
+          replacement: $1
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_deployment]
+          targetLabel: workload
+          regex: (.+)
+          replacement: $1
+        # Keep `deployment` too, for continuity with the classic Linkerd dashboards.
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_proxy_deployment]
+          targetLabel: deployment
+        - action: replace
+          sourceLabels: [__meta_kubernetes_pod_label_linkerd_io_workload_ns]
+          targetLabel: workload_ns
